@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
         await app.state.http_client.aclose()
 
 
-app = FastAPI(title="fx-tool", lifespan=lifespan)
+app = FastAPI(title="fx-tool", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
 def get_http_client(request: Request) -> httpx.AsyncClient:
