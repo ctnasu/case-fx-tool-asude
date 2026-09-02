@@ -1,45 +1,47 @@
-# Case study — Junior Software Engineer at mangolab
+# fx-tool
 
-Two small tasks, **about two and a half hours in total.** Please do not spend
-your weekend on this. If you run out of time, stop and write down what you would
-have done next — that answer counts too.
+Bir AI agent'ının çağırabileceği, döviz çevirisi yapan küçük bir HTTP servisi;
+[Frankfurter](https://frankfurter.dev) üzerinden ECB referans kurlarını
+kullanıyor.
 
-Use Claude Code, Cursor, Copilot — whatever you normally use. That is how we work
-every day, and we would rather see you use it well than watch you avoid it. The
-only thing we ask is that you know your own code.
+## Çalıştırma
 
-**Start by clicking "Use this template"** to create your own repository, then
-work there.
+```
+pip install -r requirements.txt
+./run.sh
+```
 
----
+`$PORT` üzerinden dinler (varsayılan `8080`). Upstream base URL'i
+`$FX_UPSTREAM_BASE`'den okur (varsayılan `https://api.frankfurter.dev`) —
+kodun hiçbir yerinde gerçek host hardcode edilmiyor.
 
-## Part A — build (about 90 minutes)
+Python 3.9 üzerinde test edildi (bu ortamda mevcut tek interpreter);
+kodun daha yeni bir sürüme ihtiyacı yok.
 
-A small HTTP service — Python + FastAPI preferred, TypeScript is fine — with one
-endpoint an AI agent could call as a tool:
+## Test etme
+
+```
+pip install -r requirements.txt
+./test.sh
+```
+
+Ağ bağlantısı gerektirmiyor. Her testte upstream HTTP client'ı
+`httpx.MockTransport` ile değiştiriliyor, yani `FX_UPSTREAM_BASE` kapalı bir
+porta işaret etse de testlerin sonucu değişmiyor.
+
+## Endpoint
 
 ```
 GET /tools/convert?amount=250&from=EUR&to=TRY&date=2026-08-28
 ```
 
-It answers using the public [Frankfurter API](https://frankfurter.dev) —
-European Central Bank rates, no API key, no signup.
+`date` opsiyonel; verilmezse bugüne (UTC) düşer.
 
-### Three things are fixed, so that we can run every submission the same way
-
-| | |
-|---|---|
-| Upstream URL | from the `FX_UPSTREAM_BASE` environment variable, defaulting to `https://api.frankfurter.dev`. **Nothing may hardcode the real host** — we point this at a fake upstream when reviewing. |
-| Port | from the `PORT` environment variable, default `8080` |
-| Scripts | `./run.sh` starts the service, `./test.sh` runs the tests. Both are in this template, unimplemented. |
-
-### The response
-
-On success, 200 with:
+**Başarılı — 200:**
 
 ```json
 {
-  "amount": 250,
+  "amount": 250.0,
   "from": "EUR",
   "to": "TRY",
   "rate": 47.1234,
@@ -50,80 +52,64 @@ On success, 200 with:
 }
 ```
 
-`rate_date` is **the date the rate you used actually belongs to.** `asked_date`
-is what the caller asked for. They are not always the same, and that difference
-is the point of this task.
+`rate_date`, kurun gerçekte ait olduğu tarih. `asked_date`, sorulan tarih.
+Hafta sonu/tatil günlerinde bu ikisi farklı olabilir — aşağıda detaylı.
 
-On failure, a non-2xx status and:
+**Hata — 2xx dışı her durum:**
 
 ```json
-{ "error": "<short_machine_code>", "message": "<a sentence a person could read>" }
+{ "error": "<kod>", "message": "<okunabilir bir cümle>" }
 ```
 
-List your error codes in your README.
+## Hata kodları
 
-### The part that matters
+| kod | HTTP | ne zaman |
+|---|---|---|
+| `invalid_amount` | 400 | eksik, sayı değil, ≤ 0, veya 2'den fazla ondalık basamak |
+| `invalid_currency` | 400 | `from`/`to` eksik, veya ECB'nin yayınladığı ~30 para biriminden biri değil |
+| `invalid_date` | 400 | `date` geçerli bir `YYYY-MM-DD` değil |
+| `future_date` | 400 | `date` bugünden ileri — ECB henüz o tarih için kur yayınlamış olamaz |
+| `date_before_series_start` | 400 | `date`, euro referans serisinin başladığı 1999-01-04'ten önce |
+| `no_rate_available` | 404 | tüm girdiler geçerli, ama upstream yine de o çift/tarih için kur döndürmedi |
+| `upstream_unavailable` | 502 | upstream timeout verdi, 2xx dışı bir status döndürdü, ya da JSON olmayan bir şey döndürdü |
+| `internal_error` | 500 | beklenmedik bir hata — normalde olmamalı |
 
-The caller is a language model talking to a paying customer, so **a wrong number
-is worse than no number.** Decide — and implement — what happens when:
+## Brief'teki her senaryoda ne oluyor
 
-- the ECB published no rate for the date asked (weekends, holidays);
-- the date is in the future, or before the series starts;
-- the currency code does not exist, or `from` and `to` are the same;
-- the upstream is slow, returns 500, or returns something that is not JSON;
-- `amount` is missing, zero, negative, or has ten decimal places.
+- **Hafta sonu / tatil** — reddedilmiyor. Frankfurter isteği zaten en son
+  yayınlanan iş gününe çözüyor ve hangi tarih olduğunu bildiriyor; endpoint
+  bunu okuyup `asked_date`'ten ayrı olarak `rate_date` olarak döndürüyor.
+  Canlı doğrulandı: bir Cumartesi sorulduğunda, response'daki `date` alanı
+  Cuma olarak dönüyor.
+- **Gelecek tarih** — upstream'e hiç gitmeden reddediliyor (`future_date`);
+  henüz var olmayan bir kur asla tahmin edilmiyor.
+- **Seri başlangıcından önce** — upstream'e gitmeden reddediliyor
+  (`date_before_series_start`).
+- **Bilinmeyen para birimi kodu** — upstream'e gitmeden reddediliyor
+  (`invalid_currency`), Frankfurter/ECB'nin gerçekten yayınladığı para
+  birimlerinin sabit bir listesine göre kontrol ediliyor. Upstream'in kendi
+  404'ü, "bilinmeyen para birimi" ile "bu tarih için veri yok" ve "gelecek
+  tarih" arasında ayrım yapmıyor (canlı doğrulandı — üçü de aynı
+  `{"message": "not found"}`'ı döndürüyor), o yüzden bu ayrımı kendimiz
+  yapıyoruz.
+- **`from == to`** — upstream'e hiç gidilmiyor; direkt `rate: 1.0` ve
+  `result == amount` dönüyor. (Frankfurter'ın kendi API'si bu durumda 422
+  "bad currency pair" döndürüyor — canlı doğrulandı — bu da bunu doğrudan
+  geçirmek yerine kısa devre yapmak için bir sebep daha.)
+- **Upstream yavaş / 500 / JSON değil** — her biri ayrı ayrı yakalanıp
+  `upstream_unavailable` (502) olarak raporlanıyor. Asla bir sayı
+  uydurulmuyor.
+- **`amount` eksik / sıfır / negatif / çok ondalıklı** — upstream'e gitmeden
+  `invalid_amount` olarak reddediliyor. "Çok ondalıklı" 2 basamaktan fazlası
+  demek.
 
-Your endpoint must never invent a rate, and must never present a rate as
-belonging to a date it does not belong to. Note that the upstream itself tells
-you which date its rates are from — read it. If you choose to answer with an
-earlier published rate, the response has to make that visible, because the model
-has to be able to tell the customer which day the number is from.
+## Tasarım notları (kısa versiyon — "neden"i için NOTES.md'ye bak)
 
-### Also required
-
-- **Tests that pass with no network at all** — fake the upstream. We run
-  `./test.sh` with `FX_UPSTREAM_BASE` pointing at a closed port.
-- A README of your own we can follow in under a minute: how to run it, how to
-  run the tests, your error codes, and what your endpoint does in each of the
-  cases above.
-- A repeat of the same question should not re-ask the upstream.
-- `NOTES.md`, one page. The skeleton is in this repo.
-
-### Not required, not scored
-
-Auth, a database, a UI, a Dockerfile, CI, deployment, more endpoints. Adding them
-will not help you; a smaller thing done carefully will.
-
----
-
-## Part B — review (about 45 minutes)
-
-`tool.py` in this repository is a working version of the same service, written
-quickly with an AI assistant. It runs. **Review it as if it were going live
-tomorrow for a customer who pays us.**
-
-Fill in `REVIEW.md`, one page:
-
-- what is wrong, and what it does to a **customer** — not to a linter;
-- how you would verify each finding;
-- your findings **ranked**, and which single one you would fix before shipping
-  tonight.
-
-Fewer findings, ranked and explained, beat a long list. If something looks
-suspicious but is actually fine, saying so is worth as much as finding a real
-defect.
-
----
-
-## Submitting
-
-Reply to our email with a link to your repository. Commit in small steps — the
-history is part of what we read. Five days is plenty; if you need more, just say
-so.
-
-Any question about this brief, ask. An unclear requirement is our fault, not a
-test.
-
----
-
-<sub>mangolab — Mango Yazılım Teknolojileri Ltd. Şti. · [mangolab.ai/careers](https://mangolab.ai/careers)</sub>
+- `amount`, `Decimal` olarak parse edilip çarpılıyor, asla `float` değil —
+  böylece müşteriye söylenen sayıya binary-rounding hatası karışmıyor.
+- Kur cache'i in-memory, `(from, to, asked_date)` ile key'leniyor, sürecin
+  ömrü boyunca tutuluyor — geçmiş bir kur asla değişmediği için. Aynı (henüz
+  cache'lenmemiş) key'e gelen eşzamanlı istekler tek bir lock paylaşıyor,
+  hepsi ayrı ayrı upstream'e gitmiyor (`app/cache.py`).
+- Bilinçli olarak eklenmedi (brief'e göre): auth, database, UI, Docker, CI,
+  ekstra endpoint.
