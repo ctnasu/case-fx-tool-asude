@@ -80,7 +80,7 @@ async def convert(
     async def do_fetch():
         return await fetch_rate(client, base, target, asked_date)
 
-    rate, rate_date = await _cache.get_or_fetch(base, target, asked_date, today, do_fetch)
+    rate, rate_date = await _cache.get_or_fetch(base, target, asked_date, do_fetch)
 
     return {
         "amount": float(parsed_amount),
